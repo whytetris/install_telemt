@@ -253,31 +253,17 @@ sleep 5
 echo "[*] Ищу ссылку tg://proxy..."
 RAW_LINK=$(docker logs "${SERVICE_NAME}" --tail=300 2>/dev/null | grep -Eo 'tg://proxy[^ ]+' | tail -n1)
 
-EXTERNAL_IPv6=$(curl -6 -s https://ifconfig.co || echo "")
-
 if [[ -n "${RAW_LINK}" ]]; then
+  # Подставляем только IPv4
   LINK4=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=${EXTERNAL_IP}/")
 
-  if [[ -n "$EXTERNAL_IPv6" ]]; then
-    LINK6=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=
-
-\[${EXTERNAL_IPv6}\]
-
-/")
-  else
-    LINK6="IPv6 адрес не найден"
-  fi
-
   echo ""
-  echo "================= ССЫЛКИ ================="
-  echo "IPv4:"
+  echo "================= ССЫЛКА ================="
   echo "$LINK4"
-  echo ""
-  echo "IPv6:"
-  echo "$LINK6"
   echo "==========================================="
 else
   echo "[!] Не удалось автоматически найти ссылку."
   echo "Проверь вручную:"
   echo "  docker logs ${SERVICE_NAME} --tail=300 | grep -Eo 'tg://proxy[^ ]+'"
 fi
+
