@@ -10,7 +10,7 @@ CONF_FILE="${WORKDIR}/telemt.toml"
 EXTERNAL_IP=$(curl -4 -s https://api.ipify.org || curl -s ifconfig.me)
 
 menu() {
-  echo "=============================="
+  echo "=============v2================="
   echo " 1 - Установить сервис"
   echo " 2 - Полностью удалить сервис"
   echo "=============================="
@@ -18,10 +18,19 @@ menu() {
 }
 
 remove_service() {
-  echo "[*] Остановка и удаление сервиса..."
+  echo "[*] Полное удаление сервиса..."
 
   docker rm -f "${SERVICE_NAME}" 2>/dev/null || true
-  docker compose -f "${COMPOSE_FILE}" down 2>/dev/null || true
+  docker compose -f "${COMPOSE_FILE}" down --remove-orphans 2>/dev/null || true
+
+  # Удаляем сеть telemt_default, если осталась
+  docker network rm telemt_default 2>/dev/null || true
+
+  # Убиваем docker-proxy, если остался
+  PROXIES=$(ps aux | grep docker-proxy | grep ":${PORT}" | awk '{print $2}')
+  for P in $PROXIES; do
+    kill -9 "$P" 2>/dev/null || true
+  done
 
   rm -rf "${WORKDIR}"
 
@@ -102,7 +111,6 @@ free_port() {
 }
 
 free_port
-
 
 echo "[*] Создаю рабочую директорию: ${WORKDIR}"
 mkdir -p "${WORKDIR}"
