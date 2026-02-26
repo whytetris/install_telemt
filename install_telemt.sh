@@ -72,37 +72,37 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 echo "[*] Проверка порта ${PORT}..."
-if ss -tulnp | grep -q ":${PORT} "; then
-  echo "[!] Порт ${PORT} занят."
 
-  PORT_INFO=$(ss -tulnp | grep ":${PORT} ")
-  PID=$(echo "$PORT_INFO" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
+free_port() {
+  while ss -tulnp | grep -q ":${PORT} "; do
+    PORT_INFO=$(ss -tulnp | grep ":${PORT} ")
+    PID=$(echo "$PORT_INFO" | grep -oP 'pid=\K[0-9]+')
 
-  if [[ -z "$PID" ]]; then
-    echo "[-] Не удалось определить PID процесса."
-    echo "$PORT_INFO"
-    exit 1
-  fi
+    if [[ -z "$PID" ]]; then
+      echo "[-] Не удалось определить PID процесса:"
+      echo "$PORT_INFO"
+      exit 1
+    fi
 
-  PROC_NAME=$(ps -p "$PID" -o comm= 2>/dev/null || echo "unknown")
+    PROC_NAME=$(ps -p "$PID" -o comm= 2>/dev/null || echo "unknown")
 
-  echo "[!] Порт занят процессом:"
-  echo "    PID:  $PID"
-  echo "    NAME: $PROC_NAME"
+    echo "[!] Порт ${PORT} занят:"
+    echo "    PID:  $PID"
+    echo "    NAME: $PROC_NAME"
 
-  read -r -p "Остановить процесс PID ${PID}? [y/N]: " KILL_PROC
-  if [[ "${KILL_PROC}" =~ ^[Yy]$ ]]; then
-    kill -9 "$PID" || true
-    sleep 1
-  else
-    exit 1
-  fi
+    read -r -p "Остановить процесс PID ${PID}? [y/N]: " KILL_PROC
+    if [[ "${KILL_PROC}" =~ ^[Yy]$ ]]; then
+      kill -9 "$PID" 2>/dev/null || true
+      sleep 1
+    else
+      echo "[-] Установка невозможна."
+      exit 1
+    fi
+  done
+}
 
-  if ss -tulnp | grep -q ":${PORT} "; then
-    echo "[-] Порт всё ещё занят. Установка невозможна."
-    exit 1
-  fi
-fi
+free_port
+
 
 echo "[*] Создаю рабочую директорию: ${WORKDIR}"
 mkdir -p "${WORKDIR}"
