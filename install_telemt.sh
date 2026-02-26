@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-echo "=========== ПРОВЕРКА ПОРТОВ ==========="
-sudo lsof -nP -iTCP:443 -sTCP:LISTEN || echo "Порт 443 свободен"
-echo "========================================"
-
 set -e
 
 SERVICE_NAME="telemt"
@@ -13,10 +9,16 @@ CONF_FILE="${WORKDIR}/telemt.toml"
 
 EXTERNAL_IP=$(curl -4 -s https://api.ipify.org || curl -s ifconfig.me)
 
+echo "=========== ПРОВЕРКА ПОРТОВ ==========="
+sudo lsof -nP -iTCP:443 -sTCP:LISTEN || echo "Порт 443 свободен"
+echo "========================================"
+
 menu() {
   echo "=============v3================="
   echo " 1 - Установить сервис"
   echo " 2 - Полностью удалить сервис"
+  echo " 3 - Показать ссылки"
+  echo " 4 - Настройка маршрутов если работает VPN"
   echo "=============================="
   read -r -p "Выберите действие: " ACTION
 }
@@ -27,10 +29,8 @@ remove_service() {
   docker rm -f "${SERVICE_NAME}" 2>/dev/null || true
   docker compose -f "${COMPOSE_FILE}" down --remove-orphans 2>/dev/null || true
 
-  # Удаляем сеть telemt_default, если осталась
   docker network rm telemt_default 2>/dev/null || true
 
-  # Убиваем docker-proxy, если остался
   PROXIES=$(ps aux | grep docker-proxy | grep ":${PORT}" | awk '{print $2}')
   for P in $PROXIES; do
     kill -9 "$P" 2>/dev/null || true
@@ -42,11 +42,75 @@ remove_service() {
   exit 0
 }
 
+show_links() {
+  echo "[*] Получаю ссылки из логов..."
+  RAW_LINK=$(docker logs "${SERVICE_NAME}" --tail=300 2>/dev/null | grep -Eo 'tg://proxy[^ ]+' | tail -n1)
+
+  if [[ -z "$RAW_LINK" ]]; then
+    echo "[-] Ссылки не найдены. Возможно, сервис не запущен."
+    exit 1
+  fi
+
+  EXTERNAL_IPv6=$(curl -6 -s https://ifconfig.co || echo "")
+
+  LINK4=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=${EXTERNAL_IP}/")
+
+  if [[ -n "$EXTERNAL_IPv6" ]]; then
+    SAFE_IPv6=$(printf '%s\n' "$EXTERNAL_IPv6" | sed 's/[]\/$*.^|[]/\\&/g')
+    LINK6=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=
+
+\[${SAFE_IPv6}\]
+
+/")
+  else
+    LINK6="IPv6 адрес не найден"
+  fi
+
+  echo ""
+  echo "================= ССЫЛКИ ================="
+  echo "IPv4:"
+  echo "$LINK4"
+  echo ""
+  echo "IPv6:"
+  echo "$LINK6"
+  echo "==========================================="
+  exit 0
+}
+
 menu
 
 if [[ "$ACTION" == "2" ]]; then
   remove_service
 fi
+
+if [[ "$ACTION" == "3" ]]; then
+  show_links
+fi
+
+if [[ "$ACTION" == "4" ]]; then
+  echo "[*] Настройка маршрутов для корректной работы TeleMT при активном VPN..."
+
+  MAIN_IF=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
+  MAIN_GW=$(ip route get 1.1.1.1 | awk '{print $3; exit}')
+
+  echo "[*] Основной интерфейс: $MAIN_IF"
+  echo "[*] Основной шлюз: $MAIN_GW"
+  echo "[*] Внешний IP: $EXTERNAL_IP"
+
+  echo "[*] Добавляю таблицу маршрутизации telemt..."
+  grep -q "telemt" /etc/iproute2/rt_tables || echo "200 telemt" >> /etc/iproute2/rt_tables
+
+  echo "[*] Добавляю правило для входящего трафика..."
+  ip rule add to "$EXTERNAL_IP" table telemt 2>/dev/null || true
+
+  echo "[*] Добавляю маршрут в таблицу telemt..."
+  ip route add default via "$MAIN_GW" dev "$MAIN_IF" table telemt 2>/dev/null || true
+
+  echo "[+] Маршруты настроены!"
+  echo "[+] Теперь TeleMT будет работать даже при включённом VPN."
+  exit 0
+fi
+
 
 echo "[*] Проверка прав..."
 if [[ $EUID -ne 0 ]]; then
@@ -195,37 +259,34 @@ echo "[*] Жду запуск..."
 sleep 5
 
 echo "[*] Ищу ссылку tg://proxy..."
-RAW_LINK=$(docker logs "${SERVICE_NAME}" --tail=300 2>/dev/null | grep -Eo 'tg://proxy[^ ]+' | tail -n1 || true)
+RAW_LINK=$(docker logs "${SERVICE_NAME}" --tail=300 2>/dev/null | grep -Eo 'tg://proxy[^ ]+' | tail -n1)
 
-# IPv6 внешний
 EXTERNAL_IPv6=$(curl -6 -s https://ifconfig.co || echo "")
 
 if [[ -n "${RAW_LINK}" ]]; then
-  # IPv4
-  FIXED_LINK4=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=${EXTERNAL_IP}/")
+  LINK4=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=${EXTERNAL_IP}/")
 
-  # IPv6 (если есть)
   if [[ -n "$EXTERNAL_IPv6" ]]; then
-    FIXED_LINK6=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=
+    SAFE_IPv6=$(printf '%s\n' "$EXTERNAL_IPv6" | sed 's/[]\/$*.^|[]/\\&/g')
+    LINK6=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=
 
-\[${EXTERNAL_IPv6}\]
+\[${SAFE_IPv6}\]
 
 /")
   else
-    FIXED_LINK6="IPv6 адрес не найден"
+    LINK6="IPv6 адрес не найден"
   fi
 
   echo ""
   echo "================= ССЫЛКИ ================="
   echo "IPv4:"
-  echo "$FIXED_LINK4"
+  echo "$LINK4"
   echo ""
   echo "IPv6:"
-  echo "$FIXED_LINK6"
+  echo "$LINK6"
   echo "==========================================="
 else
   echo "[!] Не удалось автоматически найти ссылку."
   echo "Проверь вручную:"
   echo "  docker logs ${SERVICE_NAME} --tail=300 | grep -Eo 'tg://proxy[^ ]+'"
 fi
-
