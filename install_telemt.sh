@@ -175,13 +175,17 @@ echo "[*] Жду запуск..."
 sleep 5
 
 echo "[*] Ищу ссылку tg://proxy..."
-LINK=$(docker logs "${SERVICE_NAME}" --tail=300 2>/dev/null | grep -Eo 'tg://proxy[^ ]+' | tail -n1 || true)
+RAW_LINK=$(docker logs "${SERVICE_NAME}" --tail=300 2>/dev/null | grep -Eo 'tg://proxy[^ ]+' | tail -n1 || true)
 
-if [[ -n "${LINK}" ]]; then
+if [[ -n "${RAW_LINK}" ]]; then
+  # Если TeleMT вывел UNKNOWN — заменяем на внешний IP
+  FIXED_LINK=$(echo "$RAW_LINK" | sed "s/server=UNKNOWN/server=${EXTERNAL_IP}/")
+
   echo "[+] Готово! Твоя ссылка:"
-  echo "${LINK}"
+  echo "${FIXED_LINK}"
 else
   echo "[!] Не удалось автоматически найти ссылку."
   echo "Проверь вручную:"
   echo "  docker logs ${SERVICE_NAME} --tail=300 | grep -Eo 'tg://proxy[^ ]+'"
 fi
+
