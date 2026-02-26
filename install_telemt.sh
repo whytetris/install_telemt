@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+echo "=========== ПРОВЕРКА ПОРТОВ ==========="
+sudo lsof -nP -iTCP:443 -sTCP:LISTEN || echo "Порт 443 свободен"
+echo "========================================"
+
 set -e
 
 SERVICE_NAME="telemt"
@@ -193,12 +197,35 @@ sleep 5
 echo "[*] Ищу ссылку tg://proxy..."
 RAW_LINK=$(docker logs "${SERVICE_NAME}" --tail=300 2>/dev/null | grep -Eo 'tg://proxy[^ ]+' | tail -n1 || true)
 
+# IPv6 внешний
+EXTERNAL_IPv6=$(curl -6 -s https://ifconfig.co || echo "")
+
 if [[ -n "${RAW_LINK}" ]]; then
-  FIXED_LINK=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=${EXTERNAL_IP}/")
-  echo "[+] Готово! Твоя ссылка:"
-  echo "${FIXED_LINK}"
+  # IPv4
+  FIXED_LINK4=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=${EXTERNAL_IP}/")
+
+  # IPv6 (если есть)
+  if [[ -n "$EXTERNAL_IPv6" ]]; then
+    FIXED_LINK6=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=
+
+\[${EXTERNAL_IPv6}\]
+
+/")
+  else
+    FIXED_LINK6="IPv6 адрес не найден"
+  fi
+
+  echo ""
+  echo "================= ССЫЛКИ ================="
+  echo "IPv4:"
+  echo "$FIXED_LINK4"
+  echo ""
+  echo "IPv6:"
+  echo "$FIXED_LINK6"
+  echo "==========================================="
 else
   echo "[!] Не удалось автоматически найти ссылку."
   echo "Проверь вручную:"
   echo "  docker logs ${SERVICE_NAME} --tail=300 | grep -Eo 'tg://proxy[^ ]+'"
 fi
+
