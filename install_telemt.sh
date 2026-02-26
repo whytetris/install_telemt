@@ -10,7 +10,7 @@ CONF_FILE="${WORKDIR}/telemt.toml"
 EXTERNAL_IP=$(curl -4 -s https://api.ipify.org || curl -s ifconfig.me)
 
 menu() {
-  echo "=============v2================="
+  echo "=============v3================="
   echo " 1 - Установить сервис"
   echo " 2 - Полностью удалить сервис"
   echo "=============================="
@@ -194,7 +194,7 @@ echo "[*] Ищу ссылку tg://proxy..."
 RAW_LINK=$(docker logs "${SERVICE_NAME}" --tail=300 2>/dev/null | grep -Eo 'tg://proxy[^ ]+' | tail -n1 || true)
 
 if [[ -n "${RAW_LINK}" ]]; then
-  FIXED_LINK=$(echo "$RAW_LINK" | sed "s/server=UNKNOWN/server=${EXTERNAL_IP}/")
+  FIXED_LINK=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=${EXTERNAL_IP}/")
   echo "[+] Готово! Твоя ссылка:"
   echo "${FIXED_LINK}"
 else
