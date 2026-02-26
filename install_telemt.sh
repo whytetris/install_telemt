@@ -7,6 +7,34 @@ WORKDIR="/opt/telemt"
 COMPOSE_FILE="${WORKDIR}/docker-compose.yml"
 CONF_FILE="${WORKDIR}/telemt.toml"
 
+EXTERNAL_IP=$(curl -4 -s https://api.ipify.org || curl -s ifconfig.me)
+
+menu() {
+  echo "=============================="
+  echo " 1 - Установить сервис"
+  echo " 2 - Полностью удалить сервис"
+  echo "=============================="
+  read -r -p "Выберите действие: " ACTION
+}
+
+remove_service() {
+  echo "[*] Остановка и удаление сервиса..."
+
+  docker rm -f "${SERVICE_NAME}" 2>/dev/null || true
+  docker compose -f "${COMPOSE_FILE}" down 2>/dev/null || true
+
+  rm -rf "${WORKDIR}"
+
+  echo "[+] Сервис полностью удалён."
+  exit 0
+}
+
+menu
+
+if [[ "$ACTION" == "2" ]]; then
+  remove_service
+fi
+
 echo "[*] Проверка прав..."
 if [[ $EUID -ne 0 ]]; then
   echo "[-] Запусти скрипт через sudo или от root."
@@ -51,7 +79,7 @@ if ss -tulnp | grep -q ":${PORT} "; then
   PID=$(echo "$PORT_INFO" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
 
   if [[ -z "$PID" ]]; then
-    echo "[-] Не удалось определить PID процесса, который держит порт."
+    echo "[-] Не удалось определить PID процесса."
     echo "$PORT_INFO"
     exit 1
   fi
@@ -62,32 +90,12 @@ if ss -tulnp | grep -q ":${PORT} "; then
   echo "    PID:  $PID"
   echo "    NAME: $PROC_NAME"
 
-  if docker ps --format '{{.Names}}' | grep -qx "${SERVICE_NAME}"; then
-    echo "[*] Это контейнер ${SERVICE_NAME}."
-    read -r -p "Переустановить сервис? [y/N]: " REINSTALL
-    if [[ "${REINSTALL}" =~ ^[Yy]$ ]]; then
-      docker rm -f "${SERVICE_NAME}" || true
-    else
-      exit 0
-    fi
+  read -r -p "Остановить процесс PID ${PID}? [y/N]: " KILL_PROC
+  if [[ "${KILL_PROC}" =~ ^[Yy]$ ]]; then
+    kill -9 "$PID" || true
+    sleep 1
   else
-    read -r -p "Остановить процесс PID ${PID}? [y/N]: " KILL_PROC
-    if [[ "${KILL_PROC}" =~ ^[Yy]$ ]]; then
-      kill -9 "$PID" || true
-      sleep 1
-    else
-      exit 1
-    fi
-
-    UNIT=$(systemctl status "$PROC_NAME" 2>/dev/null | grep "Loaded:" | awk '{print $2}' || true)
-
-    if [[ -n "$UNIT" ]]; then
-      read -r -p "Отключить автозапуск службы $UNIT? [y/N]: " DISABLE_UNIT
-      if [[ "${DISABLE_UNIT}" =~ ^[Yy]$ ]]; then
-        systemctl stop "$UNIT" || true
-        systemctl disable "$UNIT" || true
-      fi
-    fi
+    exit 1
   fi
 
   if ss -tulnp | grep -q ":${PORT} "; then
@@ -178,9 +186,7 @@ echo "[*] Ищу ссылку tg://proxy..."
 RAW_LINK=$(docker logs "${SERVICE_NAME}" --tail=300 2>/dev/null | grep -Eo 'tg://proxy[^ ]+' | tail -n1 || true)
 
 if [[ -n "${RAW_LINK}" ]]; then
-  # Если TeleMT вывел UNKNOWN — заменяем на внешний IP
   FIXED_LINK=$(echo "$RAW_LINK" | sed "s/server=UNKNOWN/server=${EXTERNAL_IP}/")
-
   echo "[+] Готово! Твоя ссылка:"
   echo "${FIXED_LINK}"
 else
@@ -188,4 +194,3 @@ else
   echo "Проверь вручную:"
   echo "  docker logs ${SERVICE_NAME} --tail=300 | grep -Eo 'tg://proxy[^ ]+'"
 fi
-
