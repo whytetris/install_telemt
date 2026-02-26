@@ -10,11 +10,11 @@ CONF_FILE="${WORKDIR}/telemt.toml"
 EXTERNAL_IP=$(curl -4 -s https://api.ipify.org || curl -s ifconfig.me)
 
 echo "=========== ПРОВЕРКА ПОРТОВ ==========="
-sudo lsof -nP -iTCP:443 -sTCP:LISTEN || echo "Порт 443 свободен"
+lsof -nP -iTCP:${PORT} -sTCP:LISTEN || echo "Порт ${PORT} свободен"
 echo "========================================"
 
 menu() {
-  echo "=============v3================="
+  echo "=============v4================="
   echo " 1 - Установить сервис"
   echo " 2 - Полностью удалить сервис"
   echo " 3 - Показать ссылки"
@@ -56,10 +56,9 @@ show_links() {
   LINK4=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=${EXTERNAL_IP}/")
 
   if [[ -n "$EXTERNAL_IPv6" ]]; then
-    SAFE_IPv6=$(printf '%s\n' "$EXTERNAL_IPv6" | sed 's/[]\/$*.^|[]/\\&/g')
     LINK6=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=
 
-\[${SAFE_IPv6}\]
+\[${EXTERNAL_IPv6}\]
 
 /")
   else
@@ -77,6 +76,20 @@ show_links() {
   exit 0
 }
 
+vpn_fix() {
+  echo "[*] Настройка DNAT для работы TeleMT при активном VPN..."
+  echo "[*] Внешний IP: ${EXTERNAL_IP}"
+  echo "[*] Порт: ${PORT}"
+
+  iptables -t nat -C OUTPUT -d "${EXTERNAL_IP}" -p tcp --dport "${PORT}" -j DNAT --to-destination 127.0.0.1:${PORT} 2>/dev/null || \
+  iptables -t nat -A OUTPUT -d "${EXTERNAL_IP}" -p tcp --dport "${PORT}" -j DNAT --to-destination 127.0.0.1:${PORT}
+
+  echo "[+] Правило DNAT добавлено:"
+  echo "    с сервера на ${EXTERNAL_IP}:${PORT} → 127.0.0.1:${PORT}"
+  echo "[+] Теперь, если сервер сам стучится на свой внешний IP, трафик пойдёт на локальный TeleMT."
+  exit 0
+}
+
 menu
 
 if [[ "$ACTION" == "2" ]]; then
@@ -88,29 +101,8 @@ if [[ "$ACTION" == "3" ]]; then
 fi
 
 if [[ "$ACTION" == "4" ]]; then
-  echo "[*] Настройка маршрутов для корректной работы TeleMT при активном VPN..."
-
-  MAIN_IF=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
-  MAIN_GW=$(ip route get 1.1.1.1 | awk '{print $3; exit}')
-
-  echo "[*] Основной интерфейс: $MAIN_IF"
-  echo "[*] Основной шлюз: $MAIN_GW"
-  echo "[*] Внешний IP: $EXTERNAL_IP"
-
-  echo "[*] Добавляю таблицу маршрутизации telemt..."
-  grep -q "telemt" /etc/iproute2/rt_tables || echo "200 telemt" >> /etc/iproute2/rt_tables
-
-  echo "[*] Добавляю правило для входящего трафика..."
-  ip rule add to "$EXTERNAL_IP" table telemt 2>/dev/null || true
-
-  echo "[*] Добавляю маршрут в таблицу telemt..."
-  ip route add default via "$MAIN_GW" dev "$MAIN_IF" table telemt 2>/dev/null || true
-
-  echo "[+] Маршруты настроены!"
-  echo "[+] Теперь TeleMT будет работать даже при включённом VPN."
-  exit 0
+  vpn_fix
 fi
-
 
 echo "[*] Проверка прав..."
 if [[ $EUID -ne 0 ]]; then
@@ -267,10 +259,9 @@ if [[ -n "${RAW_LINK}" ]]; then
   LINK4=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=${EXTERNAL_IP}/")
 
   if [[ -n "$EXTERNAL_IPv6" ]]; then
-    SAFE_IPv6=$(printf '%s\n' "$EXTERNAL_IPv6" | sed 's/[]\/$*.^|[]/\\&/g')
     LINK6=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=
 
-\[${SAFE_IPv6}\]
+\[${EXTERNAL_IPv6}\]
 
 /")
   else
