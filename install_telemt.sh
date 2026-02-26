@@ -39,7 +39,7 @@ fi
 
 echo "[*] Проверка docker compose..."
 if ! docker compose version >/dev/null 2>&1; then
-  echo "[-] Docker Compose не установлен. Убедись, что установлен пакет docker-compose-plugin."
+  echo "[-] Docker Compose не установлен."
   exit 1
 fi
 
@@ -47,58 +47,54 @@ echo "[*] Проверка порта ${PORT}..."
 if ss -tulnp | grep -q ":${PORT} "; then
   echo "[!] Порт ${PORT} занят."
 
-  # Получаем PID и команду процесса
   PORT_INFO=$(ss -tulnp | grep ":${PORT} ")
   PID=$(echo "$PORT_INFO" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
+
+  if [[ -z "$PID" ]]; then
+    echo "[-] Не удалось определить PID процесса, который держит порт."
+    echo "$PORT_INFO"
+    exit 1
+  fi
+
   PROC_NAME=$(ps -p "$PID" -o comm= 2>/dev/null || echo "unknown")
 
   echo "[!] Порт занят процессом:"
   echo "    PID:  $PID"
   echo "    NAME: $PROC_NAME"
 
-  # Проверяем, наш ли это контейнер
   if docker ps --format '{{.Names}}' | grep -qx "${SERVICE_NAME}"; then
     echo "[*] Это контейнер ${SERVICE_NAME}."
-
     read -r -p "Переустановить сервис? [y/N]: " REINSTALL
     if [[ "${REINSTALL}" =~ ^[Yy]$ ]]; then
-      echo "[*] Останавливаю и удаляю контейнер..."
-      docker rm -f "${SERVICE_NAME}" >/dev/null 2>&1 || true
+      docker rm -f "${SERVICE_NAME}" || true
     else
-      echo "[*] Отмена."
       exit 0
     fi
-
   else
-    echo "[!] Это НЕ telemt. Нужно освободить порт."
-
     read -r -p "Остановить процесс PID ${PID}? [y/N]: " KILL_PROC
     if [[ "${KILL_PROC}" =~ ^[Yy]$ ]]; then
-      echo "[*] Останавливаю процесс..."
       kill -9 "$PID" || true
+      sleep 1
     else
-      echo "[*] Отмена."
       exit 1
     fi
 
-    # Проверяем systemd unit
     UNIT=$(systemctl status "$PROC_NAME" 2>/dev/null | grep "Loaded:" | awk '{print $2}' || true)
 
     if [[ -n "$UNIT" ]]; then
-      echo "[*] Обнаружена systemd-служба: $UNIT"
-
-      read -r -p "Отключить автозапуск и остановить службу $UNIT? [y/N]: " DISABLE_UNIT
+      read -r -p "Отключить автозапуск службы $UNIT? [y/N]: " DISABLE_UNIT
       if [[ "${DISABLE_UNIT}" =~ ^[Yy]$ ]]; then
         systemctl stop "$UNIT" || true
         systemctl disable "$UNIT" || true
-        echo "[+] Служба $UNIT остановлена и отключена."
-      else
-        echo "[*] Служба не отключена. Порт может снова заняться."
       fi
     fi
   fi
-fi
 
+  if ss -tulnp | grep -q ":${PORT} "; then
+    echo "[-] Порт всё ещё занят. Установка невозможна."
+    exit 1
+  fi
+fi
 
 echo "[*] Создаю рабочую директорию: ${WORKDIR}"
 mkdir -p "${WORKDIR}"
@@ -170,11 +166,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=16m
-    deploy:
-      resources:
-        limits:
-          cpus: "0.50"
-          memory: 256M
 EOF
 
 echo "[*] Запускаю сервис..."
