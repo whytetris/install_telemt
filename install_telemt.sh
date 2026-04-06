@@ -1,235 +1,162 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-SERVICE_NAME="telemt"
+SERVICE_NAME="mtg"
+IMAGE="nineseconds/mtg:2"
 PORT="443"
-WORKDIR="/opt/telemt"
+WORKDIR="/opt/mtg"
 COMPOSE_FILE="${WORKDIR}/docker-compose.yml"
-CONF_FILE="${WORKDIR}/telemt.toml"
+CONF_FILE="${WORKDIR}/mtg.toml"
+UPSTREAM_REPO_URL="https://github.com/9seconds/mtg"
 
-EXTERNAL_IP=$(curl -4 -s https://api.ipify.org || curl -s ifconfig.me)
+EXTERNAL_IP="$(curl -4 -fsSL https://api.ipify.org 2>/dev/null || curl -4 -fsSL https://ifconfig.me 2>/dev/null || true)"
 
-echo "=========== ПРОВЕРКА ПОРТОВ ==========="
-lsof -nP -iTCP:${PORT} -sTCP:LISTEN || echo "Порт ${PORT} свободен"
-echo "========================================"
+print_port_status() {
+  echo "=========== PROVERKA PORTA ==========="
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN || echo "Port ${PORT} svoboden"
+  else
+    ss -tulnp | grep -q ":${PORT} " && ss -tulnp | grep ":${PORT} " || echo "Port ${PORT} svoboden"
+  fi
+  echo "======================================"
+}
 
 menu() {
-  echo "=============v5================="
-  echo " 1 - Установить сервис"
-  echo " 2 - Полностью удалить сервис"
-  echo " 3 - Показать ссылки"
-  echo "=============================="
-  read -r -p "Выберите действие: " ACTION
+  echo "=============== MTG ==============="
+  echo " 1 - Ustanovit servis"
+  echo " 2 - Polnostyu udalit servis"
+  echo " 3 - Pokazat ssylki"
+  echo " 4 - Dobavit VPN DNAT-fix"
+  echo "==================================="
+  read -r -p "Vyberite deystvie: " ACTION
 }
 
 remove_service() {
-  echo "[*] Полное удаление сервиса..."
+  echo "[*] Polnoe udalenie servisa..."
 
   docker rm -f "${SERVICE_NAME}" 2>/dev/null || true
-  docker compose -f "${COMPOSE_FILE}" down --remove-orphans 2>/dev/null || true
+  if [[ -f "${COMPOSE_FILE}" ]]; then
+    docker compose -f "${COMPOSE_FILE}" down --remove-orphans 2>/dev/null || true
+  fi
 
-  docker network rm telemt_default 2>/dev/null || true
+  docker network rm mtg_default 2>/dev/null || true
 
-  PROXIES=$(ps aux | grep docker-proxy | grep ":${PORT}" | awk '{print $2}')
-  for P in $PROXIES; do
-    kill -9 "$P" 2>/dev/null || true
+  PROXIES="$(ps aux | grep docker-proxy | grep ":${PORT}" | awk '{print $2}' || true)"
+  for proxy_pid in ${PROXIES}; do
+    kill -9 "${proxy_pid}" 2>/dev/null || true
   done
 
   rm -rf "${WORKDIR}"
 
-  echo "[+] Сервис полностью удалён."
+  echo "[+] Servis polnostyu udalen."
   exit 0
 }
 
-show_links() {
-  echo "[*] Получаю ссылки из логов..."
-  RAW_LINK=$(docker logs "${SERVICE_NAME}" --tail=300 2>/dev/null | grep -Eo 'tg://proxy[^ ]+' | tail -n1)
+print_access_links() {
+  local access_output tg_links tme_links
 
-  if [[ -z "$RAW_LINK" ]]; then
-    echo "[-] Ссылки не найдены. Возможно, сервис не запущен."
-    exit 1
+  echo "[*] Poluchayu ssylki iz mtg access..."
+  access_output="$(docker exec "${SERVICE_NAME}" /mtg access /config.toml 2>/dev/null || true)"
+
+  if [[ -z "${access_output}" ]]; then
+    echo "[-] Ne udalos poluchit ssylki. Vozmozhno, konteyner ne zapushchen."
+    return 1
   fi
 
-  EXTERNAL_IPv6=$(curl -6 -s https://ifconfig.co || echo "")
+  tg_links="$(printf '%s\n' "${access_output}" | grep -Eo 'tg://proxy[^"]+' | awk '!seen[$0]++' || true)"
+  tme_links="$(printf '%s\n' "${access_output}" | grep -Eo 'https://t\.me/proxy[^"]+' | awk '!seen[$0]++' || true)"
 
-  LINK4=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=${EXTERNAL_IP}/")
-
-  if [[ -n "$EXTERNAL_IPv6" ]]; then
-    LINK6=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=
-
-\[${EXTERNAL_IPv6}\]
-
-/")
-  else
-    LINK6="IPv6 адрес не найден"
+  echo ""
+  echo "================= SSYLKI ================="
+  if [[ -n "${tg_links}" ]]; then
+    echo "tg://proxy"
+    printf '%s\n' "${tg_links}"
+    echo ""
+  fi
+  if [[ -n "${tme_links}" ]]; then
+    echo "https://t.me/proxy"
+    printf '%s\n' "${tme_links}"
+    echo ""
   fi
 
-  echo ""
-  echo "================= ССЫЛКИ ================="
-  echo "IPv4:"
-  echo "$LINK4"
-  echo ""
-  echo "IPv6:"
-  echo "$LINK6"
-  echo "==========================================="
-  exit 0
+  echo "JSON ot mtg access:"
+  printf '%s\n' "${access_output}"
+  echo "=========================================="
+  return 0
 }
 
 vpn_fix() {
-  echo "[*] Настройка DNAT для работы TeleMT при активном VPN..."
-  echo "[*] Внешний IP: ${EXTERNAL_IP}"
-  echo "[*] Порт: ${PORT}"
+  if [[ -z "${EXTERNAL_IP}" ]]; then
+    echo "[-] Ne udalos opredelit vneshniy IPv4 adres."
+    exit 1
+  fi
+
+  echo "[*] Nastroyka DNAT dlya raboty MTG pri aktivnom VPN..."
+  echo "[*] Vneshniy IP: ${EXTERNAL_IP}"
+  echo "[*] Port: ${PORT}"
 
   iptables -t nat -C OUTPUT -d "${EXTERNAL_IP}" -p tcp --dport "${PORT}" -j DNAT --to-destination 127.0.0.1:${PORT} 2>/dev/null || \
-  iptables -t nat -A OUTPUT -d "${EXTERNAL_IP}" -p tcp --dport "${PORT}" -j DNAT --to-destination 127.0.0.1:${PORT}
+    iptables -t nat -A OUTPUT -d "${EXTERNAL_IP}" -p tcp --dport "${PORT}" -j DNAT --to-destination 127.0.0.1:${PORT}
 
-  echo "[+] Правило DNAT добавлено:"
-  echo "    с сервера на ${EXTERNAL_IP}:${PORT} → 127.0.0.1:${PORT}"
-  echo "[+] Теперь, если сервер сам стучится на свой внешний IP, трафик пойдёт на локальный TeleMT."
+  echo "[+] Pravilo DNAT dobavleno."
+  echo "[+] Trafik na ${EXTERNAL_IP}:${PORT} budet zavorachivatsya v lokalnyy MTG."
   exit 0
 }
 
-menu
-
-if [[ "$ACTION" == "2" ]]; then
-  remove_service
-fi
-
-if [[ "$ACTION" == "3" ]]; then
-  show_links
-fi
-
-if [[ "$ACTION" == "4" ]]; then
-  vpn_fix
-fi
-
-echo "[*] Проверка прав..."
-if [[ $EUID -ne 0 ]]; then
-  echo "[-] Запусти скрипт через sudo или от root."
-  exit 1
-fi
-
-echo "[*] Обновление пакетов..."
-apt update -y
-
-echo "[*] Проверка Docker..."
-if ! command -v docker >/dev/null 2>&1; then
-  echo "[*] Docker не найден. Устанавливаю..."
-  apt install -y ca-certificates curl gnupg lsb-release
-
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/$(. /etc/os-release; echo "$ID")/gpg \
-    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-  chmod a+r /etc/apt/keyrings/docker.gpg
-
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/$(. /etc/os-release; echo "$ID") \
-    $(lsb_release -cs) stable" \
-    > /etc/apt/sources.list.d/docker.list
-
-  apt update -y
-  apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-fi
-
-echo "[*] Проверка docker compose..."
-if ! docker compose version >/dev/null 2>&1; then
-  echo "[-] Docker Compose не установлен."
-  exit 1
-fi
-
-echo "[*] Проверка порта ${PORT}..."
-
 free_port() {
   while ss -tulnp | grep -q ":${PORT} "; do
-    PORT_INFO=$(ss -tulnp | grep ":${PORT} ")
-    PID=$(echo "$PORT_INFO" | grep -oP 'pid=\K[0-9]+')
+    local port_info pid proc_name kill_proc
 
-    if [[ -z "$PID" ]]; then
-      echo "[-] Не удалось определить PID процесса:"
-      echo "$PORT_INFO"
+    port_info="$(ss -tulnp | grep ":${PORT} ")"
+    pid="$(echo "${port_info}" | grep -oP 'pid=\K[0-9]+' | head -n1 || true)"
+
+    if [[ -z "${pid}" ]]; then
+      echo "[-] Ne udalos opredelit PID protsessa:"
+      echo "${port_info}"
       exit 1
     fi
 
-    PROC_NAME=$(ps -p "$PID" -o comm= 2>/dev/null || echo "unknown")
+    proc_name="$(ps -p "${pid}" -o comm= 2>/dev/null || echo "unknown")"
 
-    echo "[!] Порт ${PORT} занят:"
-    echo "    PID:  $PID"
-    echo "    NAME: $PROC_NAME"
+    echo "[!] Port ${PORT} zanyat:"
+    echo "    PID:  ${pid}"
+    echo "    NAME: ${proc_name}"
 
-    read -r -p "Остановить процесс PID ${PID}? [y/N]: " KILL_PROC
-    if [[ "${KILL_PROC}" =~ ^[Yy]$ ]]; then
-      kill -9 "$PID" 2>/dev/null || true
+    read -r -p "Ostanovit protsess PID ${pid}? [y/N]: " kill_proc
+    if [[ "${kill_proc}" =~ ^[Yy]$ ]]; then
+      kill -9 "${pid}" 2>/dev/null || true
       sleep 1
     else
-      echo "[-] Установка невозможна."
+      echo "[-] Ustanovka nevozmozhna."
       exit 1
     fi
   done
 }
 
-free_port
-
-echo "[*] Создаю рабочую директорию: ${WORKDIR}"
-mkdir -p "${WORKDIR}"
-cd "${WORKDIR}"
-
-echo "[*] Введи домен (SNI), например: сайт.ru"
-read -r TLS_DOMAIN
-if [[ -z "${TLS_DOMAIN}" ]]; then
-  echo "[-] Домен не может быть пустым."
-  exit 1
-fi
-
-echo "[*] Генерирую секрет пользователя..."
-USER_SECRET=$(openssl rand -hex 16)
-
-echo "[*] Создаю telemt.toml..."
-cat > "${CONF_FILE}" <<EOF
-show_link = ["user1"]
-
-[general]
-prefer_ipv6 = false
-fast_mode = true
-use_middle_proxy = false
-
-[general.modes]
-classic = false
-secure = false
-tls = true
-
-[server]
-port = ${PORT}
-listen_addr_ipv4 = "0.0.0.0"
-listen_addr_ipv6 = "::"
-
-[censorship]
-tls_domain = "${TLS_DOMAIN}"
-mask = true
-mask_port = ${PORT}
-fake_cert_len = 2048
-
-[access.users]
-user1 = "${USER_SECRET}"
-
-[[upstreams]]
-type = "direct"
-enabled = true
-weight = 10
+write_config() {
+  echo "[*] Sozdayu mtg.toml..."
+  cat > "${CONF_FILE}" <<EOF
+secret = "${USER_SECRET}"
+bind-to = "0.0.0.0:${PORT}"
+prefer-ip = "prefer-ipv4"
 EOF
 
-echo "[*] Создаю docker-compose.yml..."
-cat > "${COMPOSE_FILE}" <<EOF
+  if [[ -n "${EXTERNAL_IP}" ]]; then
+    printf 'public-ipv4 = "%s"\n' "${EXTERNAL_IP}" >> "${CONF_FILE}"
+  fi
+}
+
+write_compose() {
+  echo "[*] Sozdayu docker-compose.yml..."
+  cat > "${COMPOSE_FILE}" <<EOF
 services:
-  telemt:
-    image: whn0thacked/telemt-docker:latest
+  mtg:
+    image: ${IMAGE}
     container_name: ${SERVICE_NAME}
+    command: ["run", "/config.toml"]
     restart: unless-stopped
-    environment:
-      RUST_LOG: "info"
     volumes:
-      - ./telemt.toml:/etc/telemt.toml:ro
+      - ./mtg.toml:/config.toml:ro
     ports:
       - "${PORT}:${PORT}/tcp"
     security_opt:
@@ -242,27 +169,90 @@ services:
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=16m
 EOF
+}
 
-echo "[*] Запускаю сервис..."
-docker compose up -d
+print_port_status
+menu
 
-echo "[*] Жду запуск..."
-sleep 5
-
-echo "[*] Ищу ссылку tg://proxy..."
-RAW_LINK=$(docker logs "${SERVICE_NAME}" --tail=300 2>/dev/null | grep -Eo 'tg://proxy[^ ]+' | tail -n1)
-
-if [[ -n "${RAW_LINK}" ]]; then
-  # Подставляем только IPv4
-  LINK4=$(echo "$RAW_LINK" | sed -E "s/server=[^&]+/server=${EXTERNAL_IP}/")
-
-  echo ""
-  echo "================= ССЫЛКА ================="
-  echo "$LINK4"
-  echo "==========================================="
-else
-  echo "[!] Не удалось автоматически найти ссылку."
-  echo "Проверь вручную:"
-  echo "  docker logs ${SERVICE_NAME} --tail=300 | grep -Eo 'tg://proxy[^ ]+'"
+if [[ "${ACTION}" == "2" ]]; then
+  remove_service
 fi
 
+if [[ "${ACTION}" == "3" ]]; then
+  print_access_links
+  exit $?
+fi
+
+if [[ "${ACTION}" == "4" ]]; then
+  vpn_fix
+fi
+
+echo "[*] Proverka prav..."
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "[-] Zapustite skript cherez sudo ili ot root."
+  exit 1
+fi
+
+echo "[*] Obnovlenie paketov..."
+apt update -y
+
+echo "[*] Proverka Docker..."
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[*] Docker ne nayden. Ustanavlivayu..."
+  apt install -y ca-certificates curl gnupg lsb-release
+
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL "https://download.docker.com/linux/$(. /etc/os-release; echo "$ID")/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+
+  echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+    https://download.docker.com/linux/$(. /etc/os-release; echo "$ID") \
+    $(lsb_release -cs) stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+  apt update -y
+  apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+fi
+
+echo "[*] Proverka docker compose..."
+if ! docker compose version >/dev/null 2>&1; then
+  echo "[-] Docker Compose ne ustanovlen."
+  exit 1
+fi
+
+echo "[*] Proverka porta ${PORT}..."
+free_port
+
+echo "[*] Sozdayu rabochuyu direktoriyu: ${WORKDIR}"
+mkdir -p "${WORKDIR}"
+cd "${WORKDIR}"
+
+echo "[*] Ukazhite domen dlya FakeTLS (primer: cdn.example.com)"
+read -r TLS_DOMAIN
+if [[ -z "${TLS_DOMAIN}" ]]; then
+  echo "[-] Domen ne mozhet byt pustym."
+  exit 1
+fi
+
+echo "[*] Podtyagivayu obraz ${IMAGE}..."
+docker pull "${IMAGE}"
+
+echo "[*] Generiruyu secret cherez ofitsialnyy mtg..."
+USER_SECRET="$(docker run --rm "${IMAGE}" generate-secret --hex "${TLS_DOMAIN}")"
+
+write_config
+write_compose
+
+echo "[*] Zapuskayu servis..."
+docker compose up -d
+
+echo "[*] Zhdu zapusk..."
+sleep 5
+
+echo "[*] Proveryayu dostup k ssylkam..."
+if ! print_access_links; then
+  echo "[!] Ssylki ne poluchilos vyvesti avtomaticheski. Proverte logi konteynera vruchnuyu."
+fi
+
+echo "[*] Upstream proekt: ${UPSTREAM_REPO_URL}"
